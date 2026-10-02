@@ -7,11 +7,12 @@
  *  out of the console UART as compact binary. No networking stack of our own,
  *  no HTML, no compute — the host (csi_radar.py) parses, sanitises and renders.
  *
- *  TWO RADIO MODES (menuconfig -> "CSI radio head"):
- *    - Associate  (CSI_ASSOCIATE=y): join a 2.4 GHz AP. The channel is set for
- *      you and traffic is guaranteed (beacons + gateway pings). Needs SSID/pass.
- *    - Listen-only (CSI_ASSOCIATE=n): no credentials, no association. The radio
- *      parks on CSI_LISTEN_CHANNEL and captures ambient frames on it.
+ *  RADIO MODES (menuconfig -> "CSI radio head"):
+ *    - Listen-only (CSI_ASSOCIATE=n, the default): no credentials, no
+ *      association. The radio hops across channels (CSI_HOP) and captures
+ *      ambient frames from every transmitter it can hear — all nearby APs.
+ *    - Associate (CSI_ASSOCIATE=y): join a 2.4 GHz AP for a guaranteed steady
+ *      stream. Optional; not needed for sensing.
  *
  *  WIRE FORMAT (little-endian). Every record begins with the 4-byte magic 'CSI1'
  *    Common header (10 bytes):
@@ -28,7 +29,7 @@
  *  The host reads the same UART at CONFIG_ESP_CONSOLE_UART_BAUDRATE (921600).
  *
  *  NOTES
- *    - CSI is channel-locked: you only see the channel you are tuned to.
+ *    - CSI is channel-locked; hopping is how we cover more than one channel.
  *    - Logs share this UART; they are kept quiet and the host resyncs on magic.
  *    - Absolute phase is corrupted per packet (CFO/SFO/PDD); sanitised on the host.
  * ============================================================================
@@ -37,6 +38,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -65,6 +67,7 @@ static const char *TAG = "csi_head";
 #define MAX_CSI 256      /* max CSI bytes (40 MHz HT = 256)    */
 #define MAX_AP  32       /* max APs per scan frame             */
 #define TXBUF   1024     /* staging buffer for the UART writes */
+#define MAX_HOP 32       /* max channels in the hop list       */
 
 /* ---------------------------- capture ring -------------------------------- */
 typedef struct {
@@ -80,6 +83,7 @@ static csi_frame_t       s_rb[RB_N];
 static volatile int      s_head = 0, s_tail = 0;
 static volatile uint32_t s_seq = 0;
 static volatile uint32_t s_dropped = 0;
+static volatile bool     s_scanning = false;   /* pause hopping during a scan */
 
 /* Copy CSI in the ISR; never block or write to the UART from here. */
 static void IRAM_ATTR csi_rx_cb(void *ctx, wifi_csi_info_t *info)
@@ -133,7 +137,7 @@ static void send_hello(void)
     tx_header(T_HELLO, s_seq++);
     tx_u8(prim);
     tx_u16(64);                       /* nominal subcarriers (20 MHz) */
-    const char *fw = "csi-idf-1.1";
+    const char *fw = "csi-idf-1.2";
     uint8_t n = (uint8_t)strlen(fw);
     tx_u8(n);
     tx_bytes(fw, n);
@@ -194,6 +198,65 @@ static void traffic_task(void *arg)
 }
 #endif
 
+/* ------------------------- channel hopping (listen-only) ------------------ */
+#if !CONFIG_CSI_ASSOCIATE && CONFIG_CSI_HOP
+static uint8_t s_hop[MAX_HOP];
+static int     s_hop_n = 0;
+
+/* Parse "1,6,11" or "1-13" (or a mix) into s_hop[]. */
+static void parse_channels(void)
+{
+    const char *s = CONFIG_CSI_HOP_CHANNELS;
+    while (*s && s_hop_n < MAX_HOP) {
+        while (*s == ' ' || *s == ',') {
+            s++;
+        }
+        if (!*s) {
+            break;
+        }
+        if (*s >= '0' && *s <= '9') {
+            int a = 0;
+            while (*s >= '0' && *s <= '9') {
+                a = a * 10 + (*s - '0');
+                s++;
+            }
+            if (*s == '-') {
+                s++;
+                int b = 0;
+                while (*s >= '0' && *s <= '9') {
+                    b = b * 10 + (*s - '0');
+                    s++;
+                }
+                for (int c = a; c <= b && s_hop_n < MAX_HOP; c++) {
+                    s_hop[s_hop_n++] = (uint8_t)c;
+                }
+            } else if (a > 0 && a <= 14) {
+                s_hop[s_hop_n++] = (uint8_t)a;
+            }
+        } else {
+            s++;
+        }
+    }
+    if (s_hop_n == 0) {              /* sane fallback */
+        s_hop[s_hop_n++] = 1;
+        s_hop[s_hop_n++] = 6;
+        s_hop[s_hop_n++] = 11;
+    }
+}
+
+static void hop_task(void *arg)
+{
+    int i = 0;
+    while (1) {
+        if (!s_scanning) {
+            esp_wifi_set_channel(s_hop[i], WIFI_SECOND_CHAN_NONE);
+            i = (i + 1) % s_hop_n;
+        }
+        vTaskDelay(pdMS_TO_TICKS(CONFIG_CSI_HOP_DWELL_MS));
+    }
+}
+#endif
+
 #if CONFIG_CSI_ENABLE_SCAN
 static void scan_task(void *arg)
 {
@@ -201,6 +264,7 @@ static void scan_task(void *arg)
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(CONFIG_CSI_SCAN_PERIOD_MS));
 
+        s_scanning = true;                     /* hold the hop task still */
         esp_wifi_set_promiscuous(false);       /* scanning needs the radio */
 
         wifi_scan_config_t sc;
@@ -226,6 +290,7 @@ static void scan_task(void *arg)
             }
         }
         esp_wifi_set_promiscuous(true);
+        s_scanning = false;
     }
 }
 #endif
@@ -284,8 +349,11 @@ void app_main(void)
 #if CONFIG_CSI_ASSOCIATE
     ESP_LOGW(TAG, "associating with %s ...", CONFIG_CSI_WIFI_SSID);
     xEventGroupWaitBits(s_eg, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+#elif CONFIG_CSI_HOP
+    parse_channels();
+    esp_wifi_set_channel(s_hop[0], WIFI_SECOND_CHAN_NONE);
+    ESP_LOGW(TAG, "listen-only, hopping %d channel(s)", s_hop_n);
 #else
-    /* listen-only: no credentials, no association — park on one channel */
     ESP_ERROR_CHECK(esp_wifi_set_channel(CONFIG_CSI_LISTEN_CHANNEL, WIFI_SECOND_CHAN_NONE));
     ESP_LOGW(TAG, "listen-only on channel %d", CONFIG_CSI_LISTEN_CHANNEL);
 #endif
@@ -316,7 +384,10 @@ void app_main(void)
 #if CONFIG_CSI_TRAFFIC_GEN
     xTaskCreate(traffic_task, "traffic", 4096, NULL, 4, NULL);
 #endif
+#if !CONFIG_CSI_ASSOCIATE && CONFIG_CSI_HOP
+    xTaskCreate(hop_task, "hop", 3072, NULL, 3, NULL);
+#endif
 #if CONFIG_CSI_ENABLE_SCAN
-    xTaskCreate(scan_task, "scan", 4096, NULL, 3, NULL);
+    xTaskCreate(scan_task, "scan", 4096, NULL, 2, NULL);
 #endif
 }

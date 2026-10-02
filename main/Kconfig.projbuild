@@ -1,17 +1,18 @@
 menu "CSI radio head"
 
     config CSI_ASSOCIATE
-        bool "Associate to an AP (off = listen-only on a fixed channel)"
-        default y
+        bool "Associate to an AP (default: off = listen-only)"
+        default n
         help
-            CSI is produced only for frames the radio receives, so the ESP32
-            needs a channel to sit on and traffic to hear.
+            OFF (the default) is listen-only: no credentials, no association.
+            The radio parks on a channel — or hops across several — and captures
+            ambient frames from whatever is transmitting around it. Every nearby
+            AP beacons several times a second, and those beacons are the signals
+            we sense. You do not connect to them; you just listen.
 
-            Associating to an AP is the easiest way to get both: the channel is
-            set for you and there is a steady stream (beacons + your own
-            traffic). Turn this OFF to run listen-only — no credentials, no
-            association. The radio parks on CSI_LISTEN_CHANNEL and captures
-            whatever ambient frames appear on it (mostly AP beacons).
+            ON makes the ESP32 join a 2.4 GHz AP. That guarantees a steady
+            stream (beacons + your own traffic) and sets the channel for you, but
+            it is a convenience, not a requirement.
 
     if CSI_ASSOCIATE
 
@@ -25,11 +26,33 @@ menu "CSI radio head"
 
     endif
 
+    if !CSI_ASSOCIATE
+
+    config CSI_HOP
+        bool "Hop across channels (hear every nearby transmitter)"
+        default y
+        help
+            CSI is channel-locked, so to use ALL available signals the radio
+            cycles through the channels below, capturing whatever frames appear
+            on each. Turn this off to sit on one fixed channel instead.
+
+    config CSI_HOP_CHANNELS
+        string "Channels to hop (comma list or range, e.g. 1,6,11 or 1-13)"
+        depends on CSI_HOP
+        default "1,6,11"
+
+    config CSI_HOP_DWELL_MS
+        int "Dwell per channel (ms)"
+        depends on CSI_HOP
+        default 250
+
     config CSI_LISTEN_CHANNEL
-        int "Listen-only channel"
-        depends on !CSI_ASSOCIATE
+        int "Fixed listen channel (when hopping is off)"
+        depends on !CSI_HOP
         range 1 13
         default 6
+
+    endif
 
     config CSI_NODE_ID
         int "Node ID (unique per board)"

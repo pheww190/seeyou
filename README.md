@@ -3,8 +3,10 @@
 A thin **ESP32** (ESP-IDF) captures raw Wi-Fi **CSI** — Channel State
 Information, i.e. per-subcarrier amplitude *and* phase — and streams it out of
 the console UART as compact binary. A **Python app** on the host parses it,
-sanitises the phase, computes sensing metrics and renders a live 3D view
-(pygame + OpenGL).
+sanitises the phase, and renders a live 3D view (pygame + OpenGL).
+
+**No access point required.** By default the firmware does not associate with
+anything — it listens to the ambient radio traffic around it.
 
 ```
  ┌────────────┐   raw binary over UART (921600)   ┌──────────────────────────────┐
@@ -29,20 +31,18 @@ seeyou/
 
 ## Radio modes
 
-CSI is produced only for frames the radio actually **receives**, so the ESP32
-needs (a) a channel to sit on and (b) traffic to hear. Two ways to get that:
+CSI is produced only for frames the radio **receives**, so the ESP32 needs a
+channel to sit on and transmitters to hear. It never connects to anything by
+default:
 
-- **Associate** (`CSI_ASSOCIATE=y`, default) — join a 2.4 GHz AP. The channel is
-  set for you and there is a guaranteed stream (beacons + gateway pings). This is
-  why the firmware asks for an SSID/password. The gateway-ping traffic generator
-  lives here too.
-- **Listen-only** (`CSI_ASSOCIATE=n`) — **no credentials, no association.** The
-  radio parks on `CSI_LISTEN_CHANNEL` and captures whatever ambient frames
-  appear on it (mostly AP beacons). Handy if you don't want the node on your
-  network. Expect a lighter, burstier stream than the associated mode.
-
-Either way the ESP32 is not a network client in the usual sense — nothing is
-sent anywhere except the raw CSI out of the UART.
+- **Listen-only** (`CSI_ASSOCIATE=n`, the default) — no credentials, no
+  association. The radio **hops across channels** (`CSI_HOP`, default `1,6,11`)
+  and captures frames from every transmitter it can hear: every nearby AP
+  beacons several times a second, and those beacons are the signals we sense.
+  This is "use all available signals".
+- **Associate** (`CSI_ASSOCIATE=y`) — join a 2.4 GHz AP. Optional: it guarantees
+  a steady stream and sets the channel for you, at the cost of needing
+  credentials and sitting on one channel.
 
 ## Firmware — build & flash
 
@@ -54,11 +54,12 @@ idf.py build flash monitor
 
 | option | meaning |
 |--------|---------|
-| `CSI_ASSOCIATE` | on = join an AP; off = listen-only, no credentials |
+| `CSI_ASSOCIATE` | off (default) = listen-only; on = join an AP |
+| `CSI_HOP` / `CSI_HOP_CHANNELS` / `CSI_HOP_DWELL_MS` | channel hopping (listen-only) |
+| `CSI_LISTEN_CHANNEL` | fixed channel, when hopping is off |
 | `CSI_WIFI_SSID` / `CSI_WIFI_PASSWORD` | only when associating |
-| `CSI_LISTEN_CHANNEL` | channel to park on in listen-only mode |
 | `CSI_NODE_ID` | stamped into every frame; unique per board |
-| `CSI_TRAFFIC_GEN` | UDP pings to the gateway so CSI keeps flowing (associate mode) |
+| `CSI_TRAFFIC_GEN` | UDP pings to the gateway (associate mode) |
 | `CSI_ENABLE_SCAN` / `CSI_SCAN_PERIOD_MS` | periodic AP-scan frames |
 
 The console UART runs at **921600** (`sdkconfig.defaults`); open the host at the
@@ -77,12 +78,11 @@ python3 csi_radar.py --sim           # synthetic data, no board
 python3 csi_radar.py --selftest      # headless pipeline check
 ```
 
-The device is auto-detected: the default `/dev/ttyUSB0` (or `--port auto`) falls
-back to the first `/dev/ttyUSB*`, then `/dev/ttyACM*` if it isn't present. An
-explicitly named port that's missing is used as-is, so you get a clear error
-rather than a silent switch. If it can't open the port it prints the `usbipd` /
-permission fixes. The window needs **WSLg** (Windows 11) or an X server with
-`DISPLAY` set.
+The default `/dev/ttyUSB0` (or `--port auto`) falls back to the first
+`/dev/ttyUSB*`, then `/dev/ttyACM*` if it isn't present. An explicitly named port
+that's missing is used as-is, so you get a clear error rather than a silent
+switch. If it can't open the port it prints the `usbipd` / permission fixes. The
+window needs **WSLg** (Windows 11) or an X server with `DISPLAY` set.
 
 Keys: `space` pause the spin, `esc` quit. Flags: `--baud`, `--nsc`, `--frames N`, `--shot out.png`.
 
@@ -99,8 +99,10 @@ Common header: `magic[4]='CSI1'` `type(u8)` `node(u8)` `seq(u32)`
 ## What the display shows
 
 - **3D waterfall** — amplitude `|H[k]|` across subcarriers (x) and time (depth).
-- **Heatmap panel** — the same amplitude as a 2D image.
-- **Motion** — how fast the channel is changing.
+- **Heatmap panel** — the same amplitude as a 2D image (oldest at the bottom, newest on top).
+- **Motion** — measured **per transmitter MAC** and averaged, so a change from
+  *any* source in the airspace shows up. This is the movement detector.
+- **Sources** — how many distinct transmitters have been heard.
 - **Range** — coarse distance to the dominant path (phase-slope).
 - **AP list** — nearby access points from the periodic scan.
 
@@ -111,13 +113,16 @@ angle-of-arrival**, so you get amplitude, phase, motion and a *coarse* range to
 the dominant path — not a direction. Raw phase is corrupted per packet by
 CFO/SFO/packet-detection-delay and is sanitised on the host before display.
 
-Real imaging needs spatial diversity: **synthetic aperture** (move/rotate the
-node and fuse frames) or an **array of nodes** (≥3–4) for RF tomography. Frames
-already carry `node` + `bssid`, so adding nodes is additive on the host side —
-flash the same firmware with a different `CSI_NODE_ID`.
+Movement is the thing a single node does genuinely well: perturb the multipath
+and the per-source motion metric jumps. It cannot say *where* or *who*, and it
+cannot detect a still person. Real imaging needs spatial diversity: **synthetic
+aperture** (move/rotate the node) or an **array of nodes** (≥3–4) for RF
+tomography. Frames already carry `node` + `bssid`, so adding nodes is additive
+on the host side — flash the same firmware with a different `CSI_NODE_ID`.
 
 ## Notes
 
-- CSI is channel-locked: you only see the channel you are tuned to.
-- Scans briefly leave promiscuous mode; that is why the period is large.
+- CSI is channel-locked: hopping is how we cover more than one channel. Expect
+  burstier per-source updates while hopping than on a single fixed channel.
+- Scans briefly leave promiscuous mode; the hop task pauses during a scan.
 - Logs share the UART — kept at WARN — and the host resyncs on the `CSI1` magic.

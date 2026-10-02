@@ -190,8 +190,10 @@ class CsiState:
         self.motion = 0.0
         self.range_m = 0.0
         self.last_iq = None
+        self.prev_by_mac = {}       # mac -> last amplitude vector (per-source motion)
+        self.sources = set()        # macs heard
 
-    def push(self, iq: np.ndarray, rssi: int):
+    def push(self, iq: np.ndarray, rssi: int, mac: bytes = b""):
         n = min(len(iq), self.nsc)
         if len(iq) != self.nsc:                 # keep width fixed
             pad = np.zeros(self.nsc, np.complex64)
@@ -207,9 +209,16 @@ class CsiState:
         self.phase[-1, :n] = ph
         self.rssi[-1] = rssi
 
-        if self.last_iq is not None and len(self.last_iq) == n:
-            d = float(np.mean(np.abs(a[:n] - np.abs(self.last_iq))))
+        # motion is measured per source (per transmitter MAC) and averaged, so a
+        # change anywhere in the airspace — any AP or device — shows up.
+        key = bytes(mac)
+        self.sources.add(key)
+        prev = self.prev_by_mac.get(key)
+        if prev is not None and len(prev) == n:
+            d = float(np.mean(np.abs(a[:n] - prev)))
             self.motion = 0.9 * self.motion + 0.1 * d
+        self.prev_by_mac[key] = a[:n].copy()
+
         self.last_iq = iq[:n].copy()
         self.range_m = phase_slope_range(iq[:n])
         self.count += 1
@@ -304,13 +313,17 @@ def source_sim(fps=60, nsc=64, seed=1):
     rng = np.random.default_rng(seed)
     t = 0.0
     seq = 0
+    # several fake transmitters on their own channels, to mimic channel hopping
+    macs = [bytes([0xde, 0xad, 0xbe, 0xef, 0x00, i]) for i in range(4)]
+    chans = [1, 6, 11, 1]
     while True:
         t += 1.0 / fps
         for _ in range(3):                    # a few frames per tick
             seq += 1
-            rssi = int(-52 + 6 * math.sin(0.05 * t) + rng.normal(0, 1.5))
-            iq = synth_iq(t, nsc, rng)
-            yield pack_csi(1, seq, rssi, 6, 0, b"\xde\xad\xbe\xef\x00\x01", iq)
+            i = seq % len(macs)
+            rssi = int(-52 + 6 * math.sin(0.05 * t + i) + rng.normal(0, 1.5))
+            iq = synth_iq(t + i * 3.0, nsc, rng)
+            yield pack_csi(1, seq, rssi, chans[i], 0, macs[i], iq)
         time.sleep(1.0 / fps)
 
 
@@ -327,7 +340,7 @@ def run_selftest():
         frame = pack_csi(1, t, -50, 6, 0, b"\xaa\xbb\xcc\xdd\xee\xff", iq)
         for rec in parser.feed(frame):
             if rec["type"] == "csi":
-                state.push(csi_to_iq(rec["data"]), rec["rssi"])
+                state.push(csi_to_iq(rec["data"]), rec["rssi"], rec.get("mac", b""))
                 got += 1
     # also check the parser resyncs across garbage and split reads
     parser2 = Parser()
@@ -427,10 +440,10 @@ def run_gui(args):
         glBindTexture(GL_TEXTURE_2D, tid)
         glColor4f(1, 1, 1, 1)
         glBegin(GL_QUADS)
-        glTexCoord2f(0, 1); glVertex2f(x, y)
-        glTexCoord2f(1, 1); glVertex2f(x + w, y)
-        glTexCoord2f(1, 0); glVertex2f(x + w, y + h)
-        glTexCoord2f(0, 0); glVertex2f(x, y + h)
+        glTexCoord2f(0, 0); glVertex2f(x, y)
+        glTexCoord2f(1, 0); glVertex2f(x + w, y)
+        glTexCoord2f(1, 1); glVertex2f(x + w, y + h)
+        glTexCoord2f(0, 1); glVertex2f(x, y + h)
         glEnd()
         glDisable(GL_TEXTURE_2D)
 
@@ -464,7 +477,7 @@ def run_gui(args):
                 chunk = next(src)
                 for rec in parser.feed(chunk):
                     if rec["type"] == "csi":
-                        state.push(csi_to_iq(rec["data"]), rec["rssi"])
+                        state.push(csi_to_iq(rec["data"]), rec["rssi"], rec.get("mac", b""))
                     elif rec["type"] == "hello":
                         node_ch["ch"] = rec["ch"]; node_ch["fw"] = rec["fw"]
                     elif rec["type"] == "scan":
@@ -524,7 +537,7 @@ def run_gui(args):
         vmax = float(hm.max()) or 1.0
         norm = np.clip(hm / vmax, 0, 1)
         img = LUT[(norm * 255).astype(np.uint8)]
-        img = np.flipud(img)
+        # uploaded as-is (row 0 = v 0 = bottom edge): oldest at bottom, newest on top
         glEnable(GL_TEXTURE_2D)
         glBindTexture(GL_TEXTURE_2D, heat_tex)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
@@ -560,7 +573,7 @@ def run_gui(args):
         draw_text(f"mode  : {'SIM' if args.sim else 'LIVE'}  {'PAUSED' if paused else ''}", 20, H - 70)
         draw_text(f"frames: {state.count}    fps {fps:4.0f}", 20, H - 88)
         draw_text(f"rssi  : {state.rssi[-1]:6.1f} dBm   ch {node_ch['ch']}", 20, H - 106)
-        draw_text(f"motion: {state.motion:6.3f}", 20, H - 124)
+        draw_text(f"motion: {state.motion:6.3f}   sources: {len(state.sources)}", 20, H - 124)
         draw_text(f"range : {state.range_m:6.2f} m  (dominant path, coarse)", 20, H - 142)
         draw_text(f"fw    : {node_ch['fw']}", 20, H - 160)
         draw_text("motion", px, py - 56)
