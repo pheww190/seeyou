@@ -16,3 +16,9 @@ CONFIG_FREERTOS_HZ=1000
 # Wi-Fi
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+
+# CSI is OFF by default in ESP-IDF — this is the one option you MUST enable,
+# or esp_wifi_set_csi* is not compiled in (and wifi_csi_info_t is incomplete).
+# Depends on SOC_WIFI_CSI_SUPPORT: y for esp32/s3/c3, n for esp32c2.
+# (On IDF 4.x the symbol was CONFIG_ESP32_WIFI_CSI_ENABLED.)
+CONFIG_ESP_WIFI_CSI_ENABLED=y

@@ -62,6 +62,16 @@ idf.py build flash monitor
 | `CSI_TRAFFIC_GEN` | UDP pings to the gateway (associate mode) |
 | `CSI_ENABLE_SCAN` / `CSI_SCAN_PERIOD_MS` | periodic AP-scan frames |
 
+**One required option.** Wi-Fi CSI is **off by default** in ESP-IDF, so the build
+needs `CONFIG_ESP_WIFI_CSI_ENABLED=y` (menuconfig → Component config → Wi-Fi →
+*WiFi CSI (Channel State Information)*). It is already set in
+`sdkconfig.defaults`, so a plain `idf.py build` picks it up. On IDF 4.x the symbol
+was `CONFIG_ESP32_WIFI_CSI_ENABLED`.
+
+**Targets.** `esp32` (reference), `esp32s3`, `esp32c3` all support CSI; `esp32c2`
+does not (`SOC_WIFI_CSI_SUPPORT=n`). CSI also requires **promiscuous mode**, which
+the firmware enables.
+
 The console UART runs at **921600** (`sdkconfig.defaults`); open the host at the
 same baud.
 
