@@ -1,0 +1,18 @@
+# Console UART at 921600 so the binary CSI stream has headroom.
+# The host (csi_radar.py) must be opened at the same baud.
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600
+
+# Keep the UART quiet so logs don't pollute the binary stream.
+# (The parser resyncs on the 'CSI1' magic regardless, but quieter is nicer.)
+CONFIG_LOG_DEFAULT_LEVEL=2
+CONFIG_LOG_MAXIMUM_LEVEL=3
+
+# Slightly bigger main task; CSI work lives in its own tasks.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+
+# 1 kHz ticks → 1 ms task delays for the streaming loop.
+CONFIG_FREERTOS_HZ=1000
+
+# Wi-Fi
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32

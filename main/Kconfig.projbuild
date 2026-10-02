@@ -1,0 +1,39 @@
+menu "CSI radio head"
+
+    config CSI_WIFI_SSID
+        string "Wi-Fi SSID (2.4 GHz only)"
+        default "YOUR_WIFI_NAME"
+        help
+            The ESP32 must associate so it can receive frames to extract CSI from.
+
+    config CSI_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default "YOUR_WIFI_PASSWORD"
+
+    config CSI_NODE_ID
+        int "Node ID (unique per board)"
+        range 0 255
+        default 1
+        help
+            Stamped into every frame. Give each board a distinct id so a
+            multi-node array can be told apart on the host side.
+
+    config CSI_TRAFFIC_GEN
+        bool "Generate UDP traffic to keep CSI flowing"
+        default y
+        help
+            Sends a UDP datagram to the gateway every 10 ms so the AP replies
+            and there is a steady stream of frames to extract CSI from.
+
+    config CSI_ENABLE_SCAN
+        bool "Emit periodic AP-scan frames"
+        default y
+        help
+            A scan briefly leaves promiscuous mode, so keep the period large.
+
+    config CSI_SCAN_PERIOD_MS
+        int "Scan period (ms)"
+        depends on CSI_ENABLE_SCAN
+        default 30000
+
+endmenu
