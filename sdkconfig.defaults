@@ -1,5 +1,8 @@
 # Console UART at 921600 so the binary CSI stream has headroom.
 # The host (csi_radar.py) must be opened at the same baud.
+# NB: ESP_CONSOLE_UART_BAUDRATE is only honoured when ESP_CONSOLE_UART_CUSTOM=y.
+# Without the CUSTOM line the baud is silently ignored and stays at 115200.
+CONFIG_ESP_CONSOLE_UART_CUSTOM=y
 CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600
 
 # Keep the UART quiet so logs don't pollute the binary stream.

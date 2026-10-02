@@ -150,3 +150,12 @@ on the host side — flash the same firmware with a different `CSI_NODE_ID`.
   `SPI_FLASH_SUPPORT_*_CHIP` in menuconfig.
 - **`ESP_ROM_ELF_DIR` not defined / gdbinit warning.** Harmless — it only affects
   ROM symbols in GDB. Source the IDF export script to silence it.
+- **Console stays at 115200 despite `CONFIG_ESP_CONSOLE_UART_BAUDRATE=921600`.**
+  The baud option is only honoured when `CONFIG_ESP_CONSOLE_UART_CUSTOM=y`. Both
+  lines are in `sdkconfig.defaults`; if you build from an old `sdkconfig`, delete
+  it so they re-apply. Run the host at whatever the monitor reports
+  (`idf.py monitor` prints the baud in its banner).
+- **`idf.py monitor` crashes with `KeyError: 0`.** Expected — the CSI stream is
+  binary and the monitor tries to parse it as log lines. Don't use the monitor
+  for this project; use `csi_radar.py`. Close the monitor (`Ctrl+]`) before
+  starting the host, it holds the port.
