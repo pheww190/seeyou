@@ -7,6 +7,12 @@
  *  out of the console UART as compact binary. No networking stack of our own,
  *  no HTML, no compute — the host (csi_radar.py) parses, sanitises and renders.
  *
+ *  TWO RADIO MODES (menuconfig -> "CSI radio head"):
+ *    - Associate  (CSI_ASSOCIATE=y): join a 2.4 GHz AP. The channel is set for
+ *      you and traffic is guaranteed (beacons + gateway pings). Needs SSID/pass.
+ *    - Listen-only (CSI_ASSOCIATE=n): no credentials, no association. The radio
+ *      parks on CSI_LISTEN_CHANNEL and captures ambient frames on it.
+ *
  *  WIRE FORMAT (little-endian). Every record begins with the 4-byte magic 'CSI1'
  *    Common header (10 bytes):
  *      magic[4] type(u8) node_id(u8) seq(u32)
@@ -16,14 +22,12 @@
  *
  *  BUILD (terminal):
  *      idf.py set-target esp32          # or esp32s3 / esp32c3 ...
- *      idf.py menuconfig                # -> "CSI radio head" for SSID/password
+ *      idf.py menuconfig                # -> "CSI radio head"
  *      idf.py build flash monitor
  *
  *  The host reads the same UART at CONFIG_ESP_CONSOLE_UART_BAUDRATE (921600).
  *
  *  NOTES
- *    - CSI is produced only for frames the radio actually receives; the board
- *      associates to an AP and (optionally) pings the gateway for a steady stream.
  *    - CSI is channel-locked: you only see the channel you are tuned to.
  *    - Logs share this UART; they are kept quiet and the host resyncs on magic.
  *    - Absolute phase is corrupted per packet (CFO/SFO/PDD); sanitised on the host.
@@ -72,8 +76,8 @@ typedef struct {
     int8_t  data[MAX_CSI];
 } csi_frame_t;
 
-static csi_frame_t      s_rb[RB_N];
-static volatile int     s_head = 0, s_tail = 0;
+static csi_frame_t       s_rb[RB_N];
+static volatile int      s_head = 0, s_tail = 0;
 static volatile uint32_t s_seq = 0;
 static volatile uint32_t s_dropped = 0;
 
@@ -129,7 +133,7 @@ static void send_hello(void)
     tx_header(T_HELLO, s_seq++);
     tx_u8(prim);
     tx_u16(64);                       /* nominal subcarriers (20 MHz) */
-    const char *fw = "csi-idf-1.0";
+    const char *fw = "csi-idf-1.1";
     uint8_t n = (uint8_t)strlen(fw);
     tx_u8(n);
     tx_bytes(fw, n);
@@ -161,6 +165,7 @@ static void stream_task(void *arg)
     }
 }
 
+#if CONFIG_CSI_TRAFFIC_GEN
 static void traffic_task(void *arg)
 {
     int s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -187,7 +192,9 @@ static void traffic_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
+#endif
 
+#if CONFIG_CSI_ENABLE_SCAN
 static void scan_task(void *arg)
 {
     static wifi_ap_record_t recs[MAX_AP];
@@ -221,6 +228,7 @@ static void scan_task(void *arg)
         esp_wifi_set_promiscuous(true);
     }
 }
+#endif
 
 /* ------------------------------ events ------------------------------------ */
 static EventGroupHandle_t s_eg;
@@ -228,12 +236,15 @@ static EventGroupHandle_t s_eg;
 
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
+#if CONFIG_CSI_ASSOCIATE
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGW(TAG, "disconnected, reconnecting");
         esp_wifi_connect();
-    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+    } else
+#endif
+    if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         ESP_LOGW(TAG, "got ip " IPSTR, IP2STR(&e->ip_info.ip));
         xEventGroupSetBits(s_eg, WIFI_CONNECTED_BIT);
@@ -258,17 +269,26 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event, NULL, NULL));
 
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+
+#if CONFIG_CSI_ASSOCIATE
     wifi_config_t wc;
     memset(&wc, 0, sizeof(wc));
     strncpy((char *)wc.sta.ssid, CONFIG_CSI_WIFI_SSID, sizeof(wc.sta.ssid) - 1);
     strncpy((char *)wc.sta.password, CONFIG_CSI_WIFI_PASSWORD, sizeof(wc.sta.password) - 1);
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
+#endif
+
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGW(TAG, "connecting to %s ...", CONFIG_CSI_WIFI_SSID);
+#if CONFIG_CSI_ASSOCIATE
+    ESP_LOGW(TAG, "associating with %s ...", CONFIG_CSI_WIFI_SSID);
     xEventGroupWaitBits(s_eg, WIFI_CONNECTED_BIT, pdFALSE, pdTRUE, portMAX_DELAY);
+#else
+    /* listen-only: no credentials, no association — park on one channel */
+    ESP_ERROR_CHECK(esp_wifi_set_channel(CONFIG_CSI_LISTEN_CHANNEL, WIFI_SECOND_CHAN_NONE));
+    ESP_LOGW(TAG, "listen-only on channel %d", CONFIG_CSI_LISTEN_CHANNEL);
+#endif
 
     /* capture every frame on the tuned channel */
     wifi_promiscuous_filter_t filt;

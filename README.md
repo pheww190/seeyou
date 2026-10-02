@@ -24,42 +24,67 @@ seeyou/
 │   ├── CMakeLists.txt
 │   ├── Kconfig.projbuild       menuconfig → "CSI radio head"
 │   └── csi_head.c              firmware
-├── csi_radar.py                host: parse + sensing + 3D display
-└── legacy/
-    └── esp32_csi_stream.ino    superseded Arduino version
+└── csi_radar.py                host: parse + sensing + 3D display
 ```
+
+## Radio modes
+
+CSI is produced only for frames the radio actually **receives**, so the ESP32
+needs (a) a channel to sit on and (b) traffic to hear. Two ways to get that:
+
+- **Associate** (`CSI_ASSOCIATE=y`, default) — join a 2.4 GHz AP. The channel is
+  set for you and there is a guaranteed stream (beacons + gateway pings). This is
+  why the firmware asks for an SSID/password. The gateway-ping traffic generator
+  lives here too.
+- **Listen-only** (`CSI_ASSOCIATE=n`) — **no credentials, no association.** The
+  radio parks on `CSI_LISTEN_CHANNEL` and captures whatever ambient frames
+  appear on it (mostly AP beacons). Handy if you don't want the node on your
+  network. Expect a lighter, burstier stream than the associated mode.
+
+Either way the ESP32 is not a network client in the usual sense — nothing is
+sent anywhere except the raw CSI out of the UART.
 
 ## Firmware — build & flash
 
 ```bash
 idf.py set-target esp32            # or esp32s3 / esp32c3
-idf.py menuconfig                  # -> "CSI radio head": SSID, password, node id
+idf.py menuconfig                  # -> "CSI radio head"
 idf.py build flash monitor
 ```
 
 | option | meaning |
 |--------|---------|
-| `CSI_WIFI_SSID` / `CSI_WIFI_PASSWORD` | 2.4 GHz network to associate with |
+| `CSI_ASSOCIATE` | on = join an AP; off = listen-only, no credentials |
+| `CSI_WIFI_SSID` / `CSI_WIFI_PASSWORD` | only when associating |
+| `CSI_LISTEN_CHANNEL` | channel to park on in listen-only mode |
 | `CSI_NODE_ID` | stamped into every frame; unique per board |
-| `CSI_TRAFFIC_GEN` | UDP pings to the gateway so CSI keeps flowing |
+| `CSI_TRAFFIC_GEN` | UDP pings to the gateway so CSI keeps flowing (associate mode) |
 | `CSI_ENABLE_SCAN` / `CSI_SCAN_PERIOD_MS` | periodic AP-scan frames |
 
 The console UART runs at **921600** (`sdkconfig.defaults`); open the host at the
 same baud.
 
-## Host — run
+## Host — run (WSL)
 
 ```bash
 # get the serial port into WSL first (usbipd-win on the Windows side):
 #   usbipd list ; usbipd bind --busid <ID> ; usbipd attach --wsl --busid <ID>
 
 pip install numpy pyserial pygame PyOpenGL
-python3 csi_radar.py --port /dev/ttyACM0 --baud 921600
-python3 csi_radar.py --sim          # synthetic data, no board
-python3 csi_radar.py --selftest     # headless pipeline check
+python3 csi_radar.py                 # defaults to /dev/ttyUSB0
+python3 csi_radar.py --port auto     # first ttyUSB* / ttyACM*
+python3 csi_radar.py --sim           # synthetic data, no board
+python3 csi_radar.py --selftest      # headless pipeline check
 ```
 
-Keys: `space` pause the spin, `esc` quit. Flags: `--nsc`, `--frames N`, `--shot out.png`.
+The device is auto-detected: the default `/dev/ttyUSB0` (or `--port auto`) falls
+back to the first `/dev/ttyUSB*`, then `/dev/ttyACM*` if it isn't present. An
+explicitly named port that's missing is used as-is, so you get a clear error
+rather than a silent switch. If it can't open the port it prints the `usbipd` /
+permission fixes. The window needs **WSLg** (Windows 11) or an X server with
+`DISPLAY` set.
+
+Keys: `space` pause the spin, `esc` quit. Flags: `--baud`, `--nsc`, `--frames N`, `--shot out.png`.
 
 ## Wire format (little-endian)
 

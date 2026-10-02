@@ -1,14 +1,35 @@
 menu "CSI radio head"
 
+    config CSI_ASSOCIATE
+        bool "Associate to an AP (off = listen-only on a fixed channel)"
+        default y
+        help
+            CSI is produced only for frames the radio receives, so the ESP32
+            needs a channel to sit on and traffic to hear.
+
+            Associating to an AP is the easiest way to get both: the channel is
+            set for you and there is a steady stream (beacons + your own
+            traffic). Turn this OFF to run listen-only — no credentials, no
+            association. The radio parks on CSI_LISTEN_CHANNEL and captures
+            whatever ambient frames appear on it (mostly AP beacons).
+
+    if CSI_ASSOCIATE
+
     config CSI_WIFI_SSID
         string "Wi-Fi SSID (2.4 GHz only)"
         default "YOUR_WIFI_NAME"
-        help
-            The ESP32 must associate so it can receive frames to extract CSI from.
 
     config CSI_WIFI_PASSWORD
         string "Wi-Fi password"
         default "YOUR_WIFI_PASSWORD"
+
+    endif
+
+    config CSI_LISTEN_CHANNEL
+        int "Listen-only channel"
+        depends on !CSI_ASSOCIATE
+        range 1 13
+        default 6
 
     config CSI_NODE_ID
         int "Node ID (unique per board)"
@@ -20,10 +41,12 @@ menu "CSI radio head"
 
     config CSI_TRAFFIC_GEN
         bool "Generate UDP traffic to keep CSI flowing"
+        depends on CSI_ASSOCIATE
         default y
         help
             Sends a UDP datagram to the gateway every 10 ms so the AP replies
             and there is a steady stream of frames to extract CSI from.
+            Needs an IP, so it is only available when associated.
 
     config CSI_ENABLE_SCAN
         bool "Emit periodic AP-scan frames"

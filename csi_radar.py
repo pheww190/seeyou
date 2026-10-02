@@ -20,7 +20,9 @@ one every node in such an array would run.
 """
 
 import argparse
+import glob
 import math
+import os
 import struct
 import sys
 import time
@@ -258,9 +260,40 @@ def pack_csi(node, seq, rssi, ch, sec, mac, iq) -> bytes:
 # ----------------------------------------------------------------------------
 # sources
 # ----------------------------------------------------------------------------
+DEFAULT_PORT = "/dev/ttyUSB0"
+
+
+def resolve_port(requested: str) -> str:
+    """Pick the ESP32's serial device.
+
+    An existing path wins. The default port (or 'auto') that isn't present falls
+    back to the first /dev/ttyUSB*, then /dev/ttyACM*. An explicitly named path
+    that is missing is honoured as-is, so you get a clear error rather than a
+    silent switch to a different device.
+    """
+    requested = requested or DEFAULT_PORT
+    if os.path.exists(requested):
+        return requested
+    if requested in ("auto", DEFAULT_PORT):
+        cands = sorted(glob.glob("/dev/ttyUSB*")) + sorted(glob.glob("/dev/ttyACM*"))
+        if cands:
+            return cands[0]
+        return DEFAULT_PORT
+    return requested
+
+
 def source_serial(port, baud):
     import serial
-    ser = serial.Serial(port, baud, timeout=0.05)
+    try:
+        ser = serial.Serial(port, baud, timeout=0.05)
+    except serial.SerialException as e:
+        sys.stderr.write(
+            f"cannot open {port}: {e}\n"
+            "  - attached into WSL?   usbipd list ; usbipd attach --wsl --busid <ID>\n"
+            f"  - permission?          sudo chmod 666 {port}\n"
+            "  - different device?    try --port /dev/ttyACM0\n")
+        return
+    sys.stderr.write(f"reading {port} @ {baud} baud\n")
     while True:
         chunk = ser.read(4096)
         if chunk:
@@ -336,7 +369,14 @@ def run_gui(args):
 
     pygame.init()
     W, H = 1280, 720
-    pygame.display.set_mode((W, H), DOUBLEBUF | OPENGL | RESIZABLE)
+    try:
+        pygame.display.set_mode((W, H), DOUBLEBUF | OPENGL | RESIZABLE)
+    except pygame.error as e:
+        sys.stderr.write(
+            f"cannot open a window: {e}\n"
+            "  WSL needs WSLg (Windows 11) or an X server with DISPLAY set.\n"
+            "  headless check:  python3 csi_radar.py --selftest\n")
+        return 2
     pygame.display.set_caption("ESP32 CSI Radar")
 
     font = pygame.font.SysFont("monospace", 14)
@@ -351,8 +391,11 @@ def run_gui(args):
     node_ch = {"ch": "?", "fw": "?"}
     aps = []
 
-    src = source_sim() if args.sim else source_serial(args.port, args.baud)
-    src = iter(src)
+    if args.sim:
+        src = iter(source_sim())
+    else:
+        args.port = resolve_port(args.port)
+        src = iter(source_serial(args.port, args.baud))
 
     heat_tex = glGenTextures(1)
     LUT = colormap_lut()
@@ -550,7 +593,8 @@ def run_gui(args):
 # ----------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(description="ESP32 CSI radar (PC side)")
-    ap.add_argument("--port", default="/dev/ttyACM0", help="serial device")
+    ap.add_argument("--port", default="/dev/ttyUSB0",
+                    help="serial device (default /dev/ttyUSB0; 'auto' = first ttyUSB/ttyACM)")
     ap.add_argument("--baud", type=int, default=921600)
     ap.add_argument("--nsc", type=int, default=64, help="subcarriers to display")
     ap.add_argument("--sim", action="store_true", help="use synthetic data (no board)")
