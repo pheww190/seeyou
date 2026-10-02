@@ -139,7 +139,8 @@ class Parser:
                     if len(self.buf) < p + 9 + sl:
                         ok = False
                         break
-                    ssid = bytes(self.buf[p + 9:p + 9 + sl]).decode("utf-8", "replace")
+                    raw = bytes(self.buf[p + 9:p + 9 + sl]).decode("utf-8", "replace")
+                    ssid = "".join(c for c in raw if c.isprintable())
                     aps.append(dict(rssi=a_rssi, ch=a_ch, bssid=bssid, ssid=ssid))
                     p += 9 + sl
                 if not ok:
@@ -275,6 +276,16 @@ def pack_csi(node, seq, rssi, ch, sec, mac, iq) -> bytes:
     return bytes(b)
 
 
+def pack_scan(node, seq, aps) -> bytes:
+    """Build a SCAN frame: aps = [(rssi, ch, bssid, ssid_str), ...]."""
+    b = bytearray(MAGIC) + struct.pack("<BB", T_SCAN, node) + struct.pack("<I", seq)
+    b += struct.pack("<B", len(aps))
+    for rssi, ch, bssid, ssid in aps:
+        sb = ssid.encode("utf-8", "replace")
+        b += struct.pack("<bB", rssi, ch) + bytes(bssid) + struct.pack("<B", len(sb)) + sb
+    return bytes(b)
+
+
 # ----------------------------------------------------------------------------
 # sources
 # ----------------------------------------------------------------------------
@@ -333,6 +344,9 @@ def source_sim(fps=60, nsc=64, seed=1):
             rssi = int(-52 + 6 * math.sin(0.05 * t + i) + rng.normal(0, 1.5))
             iq = synth_iq(t + i * 3.0, nsc, rng)
             yield pack_csi(1, seq, rssi, chans[i], 0, macs[i], iq)
+        if seq % 150 < 3:                     # occasional scan frame (exercises the AP list)
+            yield pack_scan(1, seq, [(-42, 6, b"\xaa\xbb\xcc\xdd\xee\x01", "HomeNet"),
+                                     (-77, 1, b"\xaa\xbb\xcc\xdd\xee\x02", "neighbour\x00ap")])
         time.sleep(1.0 / fps)
 
 
@@ -365,6 +379,12 @@ def run_selftest():
     assert len(parser2.feed(bytes(bad))) == 0, "zero-length frame should be rejected"
     state.push(csi_to_iq(b""), -70, b"\x00" * 6)
     state.push(csi_to_iq(b"\x01\x02"), -70, b"\x00" * 6)
+
+    # scan frames: control chars in an SSID must be stripped (pygame rejects them)
+    sc = pack_scan(1, 1, [(-40, 6, b"\x01" * 6, "bad\x00ssid\x01"), (-70, 1, b"\x02" * 6, "ok")])
+    recs = parser2.feed(sc)
+    assert recs and recs[0]["type"] == "scan", "scan frame not parsed"
+    assert recs[0]["aps"][0]["ssid"] == "badssid", f"null not stripped: {recs[0]['aps'][0]['ssid']!r}"
 
     amp_mean = float(state.amp[-1].mean())
     mot = state.motion
@@ -436,6 +456,7 @@ def run_gui(args):
     fps = 0.0
 
     def text_tex(s, color=(200, 230, 255), f=None):
+        s = "".join(c for c in s if c.isprintable())   # pygame rejects control chars
         key = (s, color)
         if key in text_cache:
             return text_cache[key]
