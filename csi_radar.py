@@ -100,6 +100,9 @@ class Parser:
                 rssi = struct.unpack_from("<b", self.buf, 10)[0]
                 ch, sec = self.buf[11], self.buf[12]
                 ln = struct.unpack_from("<H", self.buf, 13)[0]
+                if ln == 0 or ln > 512 or (ln & 1):   # implausible → false sync
+                    del self.buf[:4]
+                    continue
                 mac = bytes(self.buf[15:21])
                 if len(self.buf) < 21 + ln:
                     break
@@ -160,6 +163,8 @@ def csi_to_iq(data: bytes) -> np.ndarray:
 
 def sanitize_phase(ph: np.ndarray) -> np.ndarray:
     """Remove the CFO/SFO/PDD linear ramp so multipath structure shows."""
+    if len(ph) < 2:
+        return ph
     ph = np.unwrap(ph)
     k = np.arange(len(ph), dtype=np.float32)
     A = np.vstack([k, np.ones_like(k)]).T
@@ -169,6 +174,8 @@ def sanitize_phase(ph: np.ndarray) -> np.ndarray:
 
 def phase_slope_range(iq: np.ndarray, bw_hz: float = 20e6) -> float:
     """Coarse range of the dominant path from the phase-vs-subcarrier slope."""
+    if len(iq) < 2:
+        return 0.0
     ph = np.unwrap(np.angle(iq))
     k = np.arange(len(ph))
     slope = np.polyfit(k, ph, 1)[0]           # rad per subcarrier
@@ -195,6 +202,8 @@ class CsiState:
 
     def push(self, iq: np.ndarray, rssi: int, mac: bytes = b""):
         n = min(len(iq), self.nsc)
+        if n < 4:                       # empty / truncated frame — nothing to use
+            return
         if len(iq) != self.nsc:                 # keep width fixed
             pad = np.zeros(self.nsc, np.complex64)
             pad[:n] = iq[:n]
@@ -349,6 +358,13 @@ def run_selftest():
     assert len(parser2.feed(b"\x00\x11garbage" + f_a)) == 1, "resync failed"
     assert len(parser2.feed(f_b[:10])) == 0, "premature parse on partial header"
     assert len(parser2.feed(f_b[10:])) == 1, "split read failed"
+
+    # robustness: an implausible length must resync, and empty/short CSI must not crash
+    bad = bytearray(MAGIC) + struct.pack("<BB", T_CSI, 1) + struct.pack("<I", 9)
+    bad += struct.pack("<b", -70) + struct.pack("<BB", 6, 0) + struct.pack("<H", 0) + b"\x01" * 6
+    assert len(parser2.feed(bytes(bad))) == 0, "zero-length frame should be rejected"
+    state.push(csi_to_iq(b""), -70, b"\x00" * 6)
+    state.push(csi_to_iq(b"\x01\x02"), -70, b"\x00" * 6)
 
     amp_mean = float(state.amp[-1].mean())
     mot = state.motion

@@ -97,6 +97,9 @@ static void IRAM_ATTR csi_rx_cb(void *ctx, wifi_csi_info_t *info)
     if (!info || !info->buf) {
         return;
     }
+    if (info->len < 2) {             /* nothing useful to report */
+        return;
+    }
     int next = (s_head + 1) % RB_N;
     if (next == s_tail) {            /* ring full → drop */
         s_dropped++;
