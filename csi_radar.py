@@ -604,6 +604,48 @@ def run_gui(args):
 
 
 # ----------------------------------------------------------------------------
+def run_headless(args):
+    """Read the stream and print stats — no window. Good for WSL / CI / a quick check."""
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+    parser = Parser()
+    state = CsiState(nsc=args.nsc, hist=180)
+    if args.sim:
+        src = iter(source_sim())
+        where = "sim"
+    else:
+        args.port = resolve_port(args.port)
+        src = iter(source_serial(args.port, args.baud))
+        where = args.port
+
+    print(f"listening on {where} @ {args.baud} baud   (Ctrl-C to stop)")
+    t0 = time.time()
+    frames = 0
+    last = t0
+    try:
+        for chunk in src:
+            for rec in parser.feed(chunk):
+                if rec["type"] == "csi":
+                    state.push(csi_to_iq(rec["data"]), rec["rssi"], rec.get("mac", b""))
+                    frames += 1
+                elif rec["type"] == "hello":
+                    print(f"  hello: fw={rec['fw']} ch={rec['ch']} nsc={rec['nsc']}")
+                elif rec["type"] == "scan":
+                    print(f"  scan: {len(rec['aps'])} APs")
+            now = time.time()
+            if now - last >= 1.0:
+                fps = frames / max(1e-6, now - t0)
+                print(f"frames={frames:<8d} fps={fps:6.1f}  rssi={state.rssi[-1]:6.1f} dBm  "
+                      f"sources={len(state.sources):<3d} motion={state.motion:6.3f}  "
+                      f"range={state.range_m:5.2f} m")
+                last = now
+    except KeyboardInterrupt:
+        print("\nstopped")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="ESP32 CSI radar (PC side)")
     ap.add_argument("--port", default="/dev/ttyUSB0",
@@ -614,9 +656,12 @@ def main():
     ap.add_argument("--selftest", action="store_true", help="headless pipeline check")
     ap.add_argument("--frames", type=int, default=0, help="render N frames then exit (0 = forever)")
     ap.add_argument("--shot", default="", help="save a PNG of the last frame")
+    ap.add_argument("--headless", action="store_true", help="read + print stats, no window")
     args = ap.parse_args()
     if args.selftest:
         return run_selftest()
+    if args.headless:
+        return run_headless(args)
     return run_gui(args)
 
 

@@ -84,8 +84,9 @@ same baud.
 pip install numpy pyserial pygame PyOpenGL
 python3 csi_radar.py                 # defaults to /dev/ttyUSB0
 python3 csi_radar.py --port auto     # first ttyUSB* / ttyACM*
+python3 csi_radar.py --headless      # live stats to the terminal, no window
 python3 csi_radar.py --sim           # synthetic data, no board
-python3 csi_radar.py --selftest      # headless pipeline check
+python3 csi_radar.py --selftest      # offline pipeline check
 ```
 
 The default `/dev/ttyUSB0` (or `--port auto`) falls back to the first
