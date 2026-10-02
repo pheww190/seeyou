@@ -136,3 +136,17 @@ on the host side — flash the same firmware with a different `CSI_NODE_ID`.
   burstier per-source updates while hopping than on a single fixed channel.
 - Scans briefly leave promiscuous mode; the hop task pauses during a scan.
 - Logs share the UART — kept at WARN — and the host resyncs on the `CSI1` magic.
+
+## Troubleshooting
+
+- **`esp_wifi_set_csi_config` returns `ESP_FAIL`, board aborts at boot.** Wi-Fi
+  CSI is disabled in `sdkconfig`. Enable `CONFIG_ESP_WIFI_CSI_ENABLED` in
+  menuconfig, or delete `sdkconfig` so `sdkconfig.defaults` re-applies — it is
+  only loaded when `sdkconfig` does not already exist. The firmware now fails at
+  *build* time with a clear `#error` if the option is off.
+- **`Detected size(4096k) larger than the size in the binary image header(2048k)`.**
+  Set Flash size to 4 MB (Serial flasher config → Flash size).
+- **Non-generic flash chip warning.** Optional: enable the matching
+  `SPI_FLASH_SUPPORT_*_CHIP` in menuconfig.
+- **`ESP_ROM_ELF_DIR` not defined / gdbinit warning.** Harmless — it only affects
+  ROM symbols in GDB. Source the IDF export script to silence it.

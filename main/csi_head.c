@@ -53,6 +53,12 @@
 #include "lwip/sockets.h"
 #include "lwip/inet.h"
 
+/* CSI must be enabled in Kconfig, or esp_wifi_set_csi_config() fails at runtime
+ * with ESP_FAIL. Catch it at build time instead of aborting on the board. */
+#if !CONFIG_ESP_WIFI_CSI_ENABLED
+#error "Wi-Fi CSI is disabled: enable CONFIG_ESP_WIFI_CSI_ENABLED (menuconfig -> Component config -> Wi-Fi -> WiFi CSI), or delete sdkconfig so sdkconfig.defaults re-applies."
+#endif
+
 static const char *TAG = "csi_head";
 
 #define MAGIC0 'C'
